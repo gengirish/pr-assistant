@@ -3,7 +3,8 @@
 import os
 import json
 from typing import Dict, Any, Optional
-from pydantic import BaseSettings, Field
+from pydantic_settings import BaseSettings
+from pydantic import Field
 from dotenv import load_dotenv
 
 # Load environment variables

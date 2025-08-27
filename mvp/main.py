@@ -19,6 +19,9 @@ from integrations.bitbucket_client import BitbucketClient, create_bitbucket_clie
 from dashboard.admin_dashboard import router as admin_router, setup_dashboard
 from utils.logger import setup_logging
 from utils.security import SecurityManager, create_security_manager
+from performance.cache_manager import CacheManager, create_cache_manager, CacheKeys
+from performance.database import DatabaseManager, create_database_manager, PRAnalysisRepository
+from performance.monitoring import PerformanceMonitor, create_performance_monitor, create_health_checker, RequestTimer
 
 # Setup logging
 setup_logging()
@@ -31,23 +34,57 @@ metrics_engine: Optional[MetricsEngine] = None
 jira_client: Optional[JiraClient] = None
 bitbucket_client: Optional[BitbucketClient] = None
 security_manager: Optional[SecurityManager] = None
+cache_manager: Optional[CacheManager] = None
+db_manager: Optional[DatabaseManager] = None
+performance_monitor: Optional[PerformanceMonitor] = None
+health_checker = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global scoring_engine, enhanced_suggestions_engine, metrics_engine, jira_client, bitbucket_client, security_manager
+    global scoring_engine, enhanced_suggestions_engine, metrics_engine, jira_client, bitbucket_client, security_manager, cache_manager, db_manager, performance_monitor, health_checker
     
     # Startup
     logger.info("Starting PR Assistant MVP...")
     
-    # Initialize components
+    # Initialize core components
     scoring_engine = create_scoring_engine()
     enhanced_suggestions_engine = create_enhanced_suggestions_engine()
     metrics_engine = create_metrics_engine()
     jira_client = create_jira_client()
     bitbucket_client = create_bitbucket_client()
     security_manager = create_security_manager()
+    
+    # Initialize performance components
+    try:
+        cache_manager = create_cache_manager()
+        await cache_manager.connect()
+        logger.info("Cache manager initialized")
+    except Exception as e:
+        logger.warning(f"Cache manager initialization failed: {str(e)}")
+        cache_manager = None
+    
+    try:
+        db_manager = create_database_manager()
+        await db_manager.initialize()
+        logger.info("Database manager initialized")
+    except Exception as e:
+        logger.warning(f"Database manager initialization failed: {str(e)}")
+        db_manager = None
+    
+    # Initialize monitoring
+    performance_monitor = create_performance_monitor()
+    await performance_monitor.start_monitoring()
+    
+    health_checker = create_health_checker()
+    
+    # Register health checks
+    health_checker.register_check("scoring_engine", lambda: scoring_engine is not None)
+    health_checker.register_check("jira_client", lambda: jira_client is not None)
+    health_checker.register_check("bitbucket_client", lambda: bitbucket_client is not None)
+    health_checker.register_check("cache", lambda: cache_manager is not None)
+    health_checker.register_check("database", lambda: db_manager.health_check() if db_manager else False)
     
     # Setup dashboard
     setup_dashboard(app)
@@ -60,10 +97,21 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down PR Assistant MVP...")
     
     # Cleanup
+    if performance_monitor:
+        await performance_monitor.stop_monitoring()
+    
+    if cache_manager:
+        await cache_manager.disconnect()
+    
+    if db_manager:
+        await db_manager.close()
+    
     if jira_client:
         await jira_client.close()
+    
     if bitbucket_client:
         await bitbucket_client.close()
+    
     if metrics_engine:
         await metrics_engine.close()
     
@@ -438,6 +486,41 @@ async def get_repository_analytics(
     except Exception as e:
         logger.error(f"Error getting repository analytics for {repository_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Analytics failed: {str(e)}")
+
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Prometheus metrics endpoint."""
+    if not performance_monitor:
+        raise HTTPException(status_code=503, detail="Performance monitoring not available")
+    
+    from fastapi.responses import PlainTextResponse
+    metrics_data = performance_monitor.get_prometheus_metrics()
+    return PlainTextResponse(content=metrics_data, media_type="text/plain")
+
+
+@app.get("/api/v1/performance/stats")
+async def get_performance_stats(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get current performance statistics."""
+    try:
+        stats = {}
+        
+        if performance_monitor:
+            stats["system"] = performance_monitor.get_metrics_summary()
+        
+        if cache_manager:
+            stats["cache"] = await cache_manager.get_stats()
+        
+        if health_checker:
+            stats["health"] = await health_checker.run_checks()
+        
+        return stats
+        
+    except Exception as e:
+        logger.error(f"Error getting performance stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Performance stats failed: {str(e)}")
 
 
 # Background task functions
