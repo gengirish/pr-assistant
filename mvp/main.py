@@ -12,8 +12,11 @@ from pydantic import BaseModel, Field
 
 from config.config import config
 from ai_engine.scoring_engine import ScoringEngine, PRData, create_scoring_engine
+from ai_engine.enhanced_suggestions import EnhancedSuggestionsEngine, create_enhanced_suggestions_engine
+from analytics.metrics_engine import MetricsEngine, create_metrics_engine
 from integrations.jira_client import JiraClient, create_jira_client
 from integrations.bitbucket_client import BitbucketClient, create_bitbucket_client
+from dashboard.admin_dashboard import router as admin_router, setup_dashboard
 from utils.logger import setup_logging
 from utils.security import SecurityManager, create_security_manager
 
@@ -23,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 # Global instances
 scoring_engine: Optional[ScoringEngine] = None
+enhanced_suggestions_engine: Optional[EnhancedSuggestionsEngine] = None
+metrics_engine: Optional[MetricsEngine] = None
 jira_client: Optional[JiraClient] = None
 bitbucket_client: Optional[BitbucketClient] = None
 security_manager: Optional[SecurityManager] = None
@@ -31,16 +36,21 @@ security_manager: Optional[SecurityManager] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global scoring_engine, jira_client, bitbucket_client, security_manager
+    global scoring_engine, enhanced_suggestions_engine, metrics_engine, jira_client, bitbucket_client, security_manager
     
     # Startup
     logger.info("Starting PR Assistant MVP...")
     
     # Initialize components
     scoring_engine = create_scoring_engine()
+    enhanced_suggestions_engine = create_enhanced_suggestions_engine()
+    metrics_engine = create_metrics_engine()
     jira_client = create_jira_client()
     bitbucket_client = create_bitbucket_client()
     security_manager = create_security_manager()
+    
+    # Setup dashboard
+    setup_dashboard(app)
     
     logger.info("PR Assistant MVP started successfully")
     
@@ -54,6 +64,8 @@ async def lifespan(app: FastAPI):
         await jira_client.close()
     if bitbucket_client:
         await bitbucket_client.close()
+    if metrics_engine:
+        await metrics_engine.close()
     
     logger.info("PR Assistant MVP shutdown complete")
 
@@ -77,6 +89,9 @@ app.add_middleware(
 
 # Security
 security = HTTPBearer()
+
+# Include routers
+app.include_router(admin_router, prefix="/admin", tags=["admin"])
 
 
 # Pydantic models
@@ -146,6 +161,8 @@ async def health_check():
     """Health check endpoint."""
     components = {
         "scoring_engine": "healthy" if scoring_engine else "unavailable",
+        "enhanced_suggestions_engine": "healthy" if enhanced_suggestions_engine else "unavailable",
+        "metrics_engine": "healthy" if metrics_engine else "unavailable",
         "jira_client": "healthy" if jira_client else "unavailable",
         "bitbucket_client": "healthy" if bitbucket_client else "unavailable",
         "security_manager": "healthy" if security_manager else "unavailable"
@@ -318,6 +335,109 @@ async def get_configuration(
             "thresholds": config.scoring.thresholds
         }
     }
+
+
+@app.post("/api/v1/enhanced-suggestions")
+async def get_enhanced_suggestions(
+    request: PRAnalysisRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get enhanced AI suggestions for a pull request."""
+    try:
+        logger.info(f"Getting enhanced suggestions for PR {request.pr_id}")
+        
+        if not enhanced_suggestions_engine:
+            raise HTTPException(status_code=500, detail="Enhanced suggestions engine not available")
+        
+        # Extract Jira context if requested
+        jira_context = None
+        if request.include_jira and jira_client:
+            try:
+                text = f"{request.title} {request.description}"
+                tickets = await jira_client.get_tickets_from_text(text)
+                if tickets:
+                    jira_context = tickets[0].to_dict()
+            except Exception as e:
+                logger.warning(f"Failed to get Jira context: {str(e)}")
+        
+        # Create PR data object
+        pr_data = PRData(
+            pr_id=request.pr_id,
+            title=request.title,
+            description=request.description,
+            files=request.files,
+            jira_context=jira_context
+        )
+        
+        # Get enhanced suggestions
+        suggestions = await enhanced_suggestions_engine.generate_suggestions(pr_data)
+        
+        return {
+            "pr_id": request.pr_id,
+            "suggestions": suggestions,
+            "timestamp": pr_data.timestamp if hasattr(pr_data, 'timestamp') else None
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting enhanced suggestions for PR {request.pr_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Enhanced suggestions failed: {str(e)}")
+
+
+@app.get("/api/v1/analytics/team/{team_id}")
+async def get_team_analytics(
+    team_id: str,
+    days: int = 30,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get team analytics and metrics."""
+    try:
+        if not metrics_engine:
+            raise HTTPException(status_code=500, detail="Metrics engine not available")
+        
+        metrics = await metrics_engine.get_team_metrics(team_id, days)
+        return metrics
+        
+    except Exception as e:
+        logger.error(f"Error getting team analytics for {team_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Analytics failed: {str(e)}")
+
+
+@app.get("/api/v1/analytics/developer/{developer_id}")
+async def get_developer_analytics(
+    developer_id: str,
+    days: int = 30,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get developer analytics and metrics."""
+    try:
+        if not metrics_engine:
+            raise HTTPException(status_code=500, detail="Metrics engine not available")
+        
+        metrics = await metrics_engine.get_developer_metrics(developer_id, days)
+        return metrics
+        
+    except Exception as e:
+        logger.error(f"Error getting developer analytics for {developer_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Analytics failed: {str(e)}")
+
+
+@app.get("/api/v1/analytics/repository/{repository_id}")
+async def get_repository_analytics(
+    repository_id: str,
+    days: int = 30,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get repository analytics and metrics."""
+    try:
+        if not metrics_engine:
+            raise HTTPException(status_code=500, detail="Metrics engine not available")
+        
+        metrics = await metrics_engine.get_repository_metrics(repository_id, days)
+        return metrics
+        
+    except Exception as e:
+        logger.error(f"Error getting repository analytics for {repository_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Analytics failed: {str(e)}")
 
 
 # Background task functions
