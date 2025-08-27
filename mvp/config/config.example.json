@@ -1,0 +1,79 @@
+{
+  "app": {
+    "name": "Intelligent PR Assistant",
+    "version": "1.0.0",
+    "environment": "development"
+  },
+  "aws": {
+    "region": "us-east-1",
+    "dynamodb": {
+      "tableName": "pr-assistant-data",
+      "endpoint": "https://dynamodb.us-east-1.amazonaws.com"
+    },
+    "lambda": {
+      "functionName": "pr-assistant-processor",
+      "timeout": 30
+    },
+    "kms": {
+      "keyId": "your-kms-key-id"
+    }
+  },
+  "atlassian": {
+    "oauth": {
+      "clientId": "your-oauth-client-id",
+      "clientSecret": "your-oauth-client-secret",
+      "scopes": ["read:jira-work", "write:jira-work", "read:bitbucket-repo"]
+    },
+    "forge": {
+      "appId": "your-forge-app-id"
+    },
+    "bitbucket": {
+      "baseUrl": "https://api.bitbucket.org/2.0",
+      "webhookSecret": "your-webhook-secret"
+    },
+    "jira": {
+      "baseUrl": "https://your-domain.atlassian.net",
+      "apiVersion": "3"
+    }
+  },
+  "openai": {
+    "apiKey": "your-openai-api-key",
+    "model": "gpt-4-turbo",
+    "maxTokens": 2000,
+    "temperature": 0.3
+  },
+  "scoring": {
+    "weights": {
+      "clarity": 0.3,
+      "context": 0.25,
+      "completeness": 0.25,
+      "jiraLink": 0.2
+    },
+    "thresholds": {
+      "excellent": 8.5,
+      "good": 7.0,
+      "needsImprovement": 5.0
+    }
+  },
+  "security": {
+    "encryption": {
+      "algorithm": "AES-256-GCM",
+      "keyRotationDays": 90
+    },
+    "jwt": {
+      "secret": "your-jwt-secret",
+      "expiresIn": "24h"
+    }
+  },
+  "logging": {
+    "level": "info",
+    "format": "json",
+    "destinations": ["console", "cloudwatch"]
+  },
+  "features": {
+    "aiSuggestions": true,
+    "jiraAutoLink": true,
+    "complianceCheck": true,
+    "analytics": false
+  }
+}
